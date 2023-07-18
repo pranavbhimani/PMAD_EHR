@@ -1,0 +1,339 @@
+---
+title: "PHQ9_clean"
+author: "Yinglin Dai"
+date: "2023-07-18"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, warning=FALSE, message=FALSE}
+library(dplyr)
+library(readxl)
+library(ggplot2)
+
+phq9 <- read_excel("PHQ9_edited.xlsx")
+
+# convert each answer to score accordingly
+num_phq9 <- phq9 %>%
+  mutate(score = case_when(QUEST_ANSWER == 'Not at all' ~ 0,
+                                  QUEST_ANSWER == 'Several days' ~ 1,
+                                  QUEST_ANSWER == 'More than half the days' ~ 2,
+                                  QUEST_ANSWER == 'Nearly every day' ~ 3,
+                                  .default = as.numeric(QUEST_ANSWER)))
+
+# filter the TOTAL
+tot_filter <- num_phq9 %>%
+  filter(QUEST_NAME == 'PHQ-9 TOTAL') %>%
+  select(message_id, QUEST_NAME, score, new_id)
+
+```
+
+# Check if the total score is accurate
+```{r, warning=FALSE, message=FALSE}
+# calculate the sum for each patient each time
+sum_check <- num_phq9 %>%
+  filter(QUEST_NAME != 'PHQ-9 TOTAL') %>%
+  filter(QUEST_NAME != 'PHQ-9 SCORING QUESTION') %>%
+  group_by(new_id, message_id) %>%
+  summarise(sum_num = sum(score))
+
+
+# join and compare
+joined <- tot_filter %>%
+  inner_join(sum_check, by = c('new_id', 'message_id'))
+
+table(joined$score == joined$sum_num) # all true
+
+```
+
+# Deal with NA values
+```{r, warning=FALSE, message=FALSE}
+# Total 731 NA values
+
+col_name <- colnames(num_phq9)
+
+# Check total number of NA in each column
+num_na_column <- colSums(is.na(num_phq9))
+
+as.data.frame(num_na_column)
+
+barplot(num_na_column, 
+        main = 'Number of NA values in Each Column in PHQ9', 
+        xlab = 'Column Name', 
+        ylab = 'Number of NA',
+        ylim = c(0, 900),
+        cex.names = 0.50,
+        cex.axis = 0.75,
+        col = 'seagreen')
+
+
+num_phq9_romove_na <- num_phq9 %>%
+  filter(!if_any(everything(), is.na))
+
+na_rows <- num_phq9 %>%
+  filter(if_any(everything(), is.na))
+
+head(na_rows)
+
+table(na_rows$QUEST_NAME)
+
+na_q_name_distribution <- ggplot(na_rows) +
+  geom_bar(aes(x = QUEST_NAME), fill = 'seagreen') +
+  labs(x = 'Question Name',
+       title = 'Distribution of NA values')
+
+na_q_name_distribution
+```
+
+# Histogram of the total score distribution
+```{r, warning=FALSE, message=FALSE}
+romove_na_rows <- num_phq9 %>%
+  filter(!if_any(everything(), is.na))
+
+total_score <- num_phq9_romove_na %>%
+  filter(QUEST_NAME == 'PHQ-9 TOTAL')
+# mean(as.numeric(total_score$QUEST_ANSWER))
+# median(as.numeric(total_score$QUEST_ANSWER))
+# sd(as.numeric(total_score$QUEST_ANSWER))
+
+hist(as.numeric(total_score$QUEST_ANSWER),
+     main = 'Total Score Distribution in PHQ9',
+     xlab = 'Total Score',
+     ylab = 'Number of Patients',
+     col = 'seagreen')
+
+```
+
+# Histogram of administration per patient
+```{r, warning=FALSE, message=FALSE}
+phq9_usage_hist <- romove_na_rows %>% 
+  filter(QUEST_NAME == "PHQ-9 TOTAL")%>% 
+  group_by(new_id) %>% 
+  summarise(phq9_administration_per_patient = n_distinct(message_id))
+
+hist(phq9_usage_hist$phq9_administration_per_patient, breaks = 20, main = 'Distribution of PHQ-9 Administrations per Patient', xlab = 'Number of Administration per Patient', col = 'seagreen')
+```
+
+# Split up patients by Pre 2020 and Post 2020
+```{r, warning=FALSE, message=FALSE}
+first_record <- num_phq9_romove_na %>%
+  group_by(new_id) %>%
+  filter(created_time == min(created_time))
+
+pre_2020 <- first_record %>%
+  filter(created_time < 2020)
+
+post_2020 <- first_record %>%
+  filter(created_time >= 2020)
+
+head(pre_2020)
+head(post_2020)
+
+pre_2020_total <- pre_2020 %>%
+  filter(QUEST_NAME == 'PHQ-9 TOTAL')
+
+post_2020_total <- post_2020 %>%
+  filter(QUEST_NAME == 'PHQ-9 TOTAL')
+
+head(pre_2020_total)
+head(post_2020_total)
+
+library(zoo)
+
+# pre-2020 trajectory data manipulation
+pre_2020_total <- pre_2020_total %>%
+  mutate(created_date = strsplit(created_time, " ")[[1]][1])
+
+post_2020_total <- post_2020_total %>%
+  mutate(created_date = strsplit(created_time, " ")[[1]][1])
+```
+
+# Prevalence of the first administration per patient per year 
+```{r, warning=FALSE, message=FALSE}
+
+## 2016-2019
+pre_2020_total$created_date <- as.Date(pre_2020_total$created_date)
+pre_2020_total$year <- as.numeric(format(pre_2020_total$created_date,'%Y'))
+pre_2020_total$QUEST_ANSWER <- as.numeric(pre_2020_total$QUEST_ANSWER)
+
+#sum(pre_2020_total$QUEST_ANSWER != pre_2020_total$score)
+pre_2020_total$num_pat_10 <- if_else(pre_2020_total$score >= 10, 1, 0)
+
+pre_2020_total %>%
+  group_by(year) %>%
+  summarise(num_per_yr = n(),
+            sum_pat = sum(num_pat_10),
+            perc_prev = sum(num_pat_10) / num_per_yr)
+
+## 2020-2021
+post_2020_total$created_date <- as.Date(post_2020_total$created_date)
+post_2020_total$year <- as.numeric(format(post_2020_total$created_date,'%Y'))
+post_2020_total$QUEST_ANSWER <- as.numeric(post_2020_total$QUEST_ANSWER)
+
+# sum(post_2020_total$QUEST_ANSWER != post_2020_total$score)
+post_2020_total$num_pat_10 <- if_else(post_2020_total$score >= 10, 1, 0)
+
+
+post_2020_total %>%
+  group_by(year) %>%
+  summarise(num_per_yr = n(),
+            sum_pat = sum(num_pat_10),
+            perc_prev = sum(num_pat_10) / num_per_yr)
+
+total <- rbind(pre_2020_total, post_2020_total)
+prev_per_yr <- total %>%
+  group_by(year) %>%
+  summarise(tot_pat = n(),
+            pat_10 = sum(num_pat_10),
+            perc_prev_per_yr = round((sum(pat_10) / tot_pat), 2))
+
+prev_per_yr$ins <- 'PHQ-9'
+
+
+prev_per_yr %>% 
+  ggplot(aes(x = year, y = perc_prev_per_yr, label = perc_prev_per_yr)) +
+  geom_line(size = 1, color = 'red') +
+  geom_point(color = 'red') +
+  geom_text(aes(label = perc_prev_per_yr, size = NULL), nudge_y = 0.025, nudge_x = 0.2) +
+  labs(title = "Prevalence of Depression by Year (PHQ-9)",
+       x = "Year", y = "Prevalence") + theme_bw() + theme(panel.border = element_blank(), panel.grid.major = element_blank(),
+panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))+ 
+    geom_errorbar(aes(ymin=perc_prev_per_yr-1.96*sqrt(perc_prev_per_yr*(1-perc_prev_per_yr)/tot_pat), ymax=perc_prev_per_yr+1.96*sqrt(perc_prev_per_yr*(1-perc_prev_per_yr)/tot_pat), width=.1, col = 'red'))
+
+```
+
+# Pre and post-2020 trajectory of the average total score of patients under each status per month
+```{r, warning=FALSE, message=FALSE}
+pre_2020_total_6_status <- pre_2020_total %>%
+  mutate(created_yr_mon = as.yearmon(created_date),
+         ini_status = factor(case_when(QUEST_ANSWER >= 20 & QUEST_ANSWER <= 27 ~ 'Severe depression',
+                                QUEST_ANSWER >= 15 & QUEST_ANSWER <= 19 ~ 'Moderately severe depression',
+                                QUEST_ANSWER >= 10 & QUEST_ANSWER <= 14 ~ 'Moderate depression',
+                                QUEST_ANSWER >= 5 & QUEST_ANSWER <= 9 ~ 'Mild depression',
+                                QUEST_ANSWER >= 1 & QUEST_ANSWER <= 4 ~ 'Minimal depression',
+                                QUEST_ANSWER == 0 ~ 'Not at all'), levels = c('Not at all', 'Minimal depression', 'Mild depression', 'Moderate depression', 'Moderately severe depression', 'Severe depression')))
+
+
+pre_2020_total_6_status$QUEST_ANSWER <- as.numeric(pre_2020_total_6_status$QUEST_ANSWER)
+
+pre_2020_count_status_6 <- pre_2020_total_6_status %>% 
+  group_by(ini_status, created_yr_mon) %>%
+  summarise(mean_score_per_month = mean(QUEST_ANSWER),
+            std = sd(QUEST_ANSWER),
+            n = n())
+
+
+pre_2020_total_6_status_score_per_month <- ggplot(pre_2020_count_status_6, aes(x = created_yr_mon, y = mean_score_per_month, group = ini_status, color = ini_status)) +
+  geom_line(linewidth = 1) +
+  geom_point() +
+  labs(x = 'Months',
+       y = 'Average Total Score of Patients',
+       title = 'Pre-2020 Trajectory of the Average Total Score of Patients under Each Status per Month',
+       color = 'Status') +
+  theme_bw()  +
+  geom_ribbon(aes(ymin = mean_score_per_month - 1.96 * std / sqrt(n),
+                  ymax = mean_score_per_month + 1.96 * std / sqrt(n),
+                  fill = ini_status), alpha = 0.2) +
+  guides(fill = FALSE)      
+
+pre_2020_total_6_status_score_per_month
+
+
+pre_2020_total_6_status_score_per_month_wo <- ggplot(pre_2020_count_status_6, aes(x = created_yr_mon, y = mean_score_per_month, group = ini_status, color = ini_status)) +
+  geom_line(linewidth = 1) +
+  geom_point() +
+  # scale_color_brewer(palette="YlOrRd") +
+  labs(x = 'Months',
+       y = 'Average Total Score of Patients',
+       title = 'Pre-2020 Trajectory of the Average Total Score of Patients under Each Status per Month',
+       color = 'Status') +
+  theme_bw() 
+
+pre_2020_total_6_status_score_per_month_wo
+```
+
+```{r, warning=FALSE, message=FALSE}
+post_2020_total_6_status <- post_2020_total %>%
+  mutate(created_yr_mon = as.yearmon(created_date),
+         ini_status = factor(case_when(QUEST_ANSWER >= 20 & QUEST_ANSWER <= 27 ~ 'Severe depression',
+                                QUEST_ANSWER >= 15 & QUEST_ANSWER <= 19 ~ 'Moderately severe depression',
+                                QUEST_ANSWER >= 10 & QUEST_ANSWER <= 14 ~ 'Moderate depression',
+                                QUEST_ANSWER >= 5 & QUEST_ANSWER <= 9 ~ 'Mild depression',
+                                QUEST_ANSWER >= 1 & QUEST_ANSWER <= 4 ~ 'Minimal depression',
+                                QUEST_ANSWER == 0 ~ 'Not at all'), levels = c('Not at all', 'Minimal depression', 'Mild depression', 'Moderate depression', 'Moderately severe depression', 'Severe depression')))
+
+
+post_2020_total_6_status$QUEST_ANSWER <- as.numeric(post_2020_total_6_status$QUEST_ANSWER)
+
+post_2020_count_status_6 <- post_2020_total_6_status %>% 
+  group_by(ini_status, created_yr_mon) %>%
+  summarise(mean_score_per_month = mean(QUEST_ANSWER),
+            std = sd(QUEST_ANSWER),
+            n = n())
+
+post_2020_total_6_status_score_per_month <- ggplot(post_2020_count_status_6, aes(x = created_yr_mon, y = mean_score_per_month, group = ini_status, color = ini_status)) +
+  geom_line(linewidth = 1) +
+  geom_point() +
+  labs(x = 'Months',
+       y = 'Average Total Score of Patients',
+       title = 'Post-2020 Trajectory of the Average Total Score of Patients under Each Status per Month',
+       color = 'Status') +
+  theme_bw()  +
+  geom_ribbon(aes(ymin = mean_score_per_month - 1.96 * std / sqrt(n),
+                  ymax = mean_score_per_month + 1.96 * std / sqrt(n),
+                  fill = ini_status), alpha = 0.2) +
+  guides(fill = FALSE)      
+
+post_2020_total_6_status_score_per_month
+
+
+
+post_2020_total_6_status_score_per_month_wo <- ggplot(post_2020_count_status_6, aes(x = created_yr_mon, y = mean_score_per_month, group = ini_status, color = ini_status)) +
+  geom_line(linewidth = 1) +
+  geom_point() +
+  labs(x = 'Months',
+       y = 'Average Total Score of Patients',
+       title = 'Post-2020 Trajectory of the Average Total Score of Patients under Each Status per Month',
+       color = 'Status') +
+  theme_bw() 
+
+post_2020_total_6_status_score_per_month_wo
+```
+
+# Pre and post-2020 Trajectory of the Number of Patients under Each Status
+```{r, warning=FALSE, message=FALSE}
+## pre_2020
+pre_2020_count_status_6 <- pre_2020_total_6_status %>%
+  group_by(ini_status, created_yr_mon) %>%
+  summarise(status_num = length(ini_status))
+
+
+pre_2020_traj_6_status <- ggplot(pre_2020_count_status_6, aes(x = created_yr_mon, y = status_num, fill = ini_status)) +
+  geom_bar(stat = 'identity', color = 'black', position = position_dodge()) +
+  labs(x = 'Time',
+       y = 'Number of Patients',
+       title = 'Pre-2020 Trajectory of the Number of Patients under Each Status',
+       fill = 'Status') 
+
+pre_2020_traj_6_status
+```
+
+```{r, warning=FALSE, message=FALSE}
+## post_2020
+post_2020_count_status_6 <- post_2020_total_6_status %>% 
+  group_by(ini_status, created_yr_mon) %>%
+  summarise(status_num = length(ini_status)) 
+
+
+post_2020_traj_6_status <- ggplot(post_2020_count_status_6, aes(x = created_yr_mon, y = status_num, fill = ini_status)) +
+  geom_bar(stat = 'identity', color = 'black', position = position_dodge()) +
+  labs(x = 'Time',
+       y = 'Number of Patients',
+       title = 'Post-2020 Trajectory of the Number of Patients under Each Status',
+       fill = 'Status') 
+
+post_2020_traj_6_status
+```
